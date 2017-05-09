@@ -27,7 +27,8 @@
 -export([init/0,
          run/1,
          match/1,
-         register/4]).
+         register/4,
+         unregister/1]).
 
 -type err() :: {error, term()}.
 -type proplist() :: [{atom(), term()}].
@@ -61,6 +62,12 @@ register(Cmd, Keys0, Flags0, Fun) ->
                                       {keys, Keys0},
                                       {flags, Flags0}]),
             {error, Err}
+    end.
+
+unregister(Cmd) ->
+    case ets:lookup(?cmd_table, Cmd) of
+        [] -> {error, command_not_register};
+        [_] -> ets:delete(?cmd_table, Cmd)
     end.
 
 verify_register(Cmd) ->

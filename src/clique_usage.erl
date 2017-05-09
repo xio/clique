@@ -37,6 +37,7 @@
 -export([init/0,
          find/1,
          register/2,
+         unregister/1,
          print/1]).
 
 init() ->
@@ -48,6 +49,13 @@ init() ->
 -spec register([string()], usage()) -> true.
 register(Cmd, Usage) ->
     ets:insert(?usage_table, {Cmd, Usage}).
+
+-spec unregister([string()]) -> true.
+unregister(Cmd) ->
+    case ets:lookup(?usage_table, Cmd) of
+        [] -> {error, usage_not_register};
+        [{Cmd, _}] -> ets:delete(?usage_table, Cmd)
+    end.
 
 -spec print(iolist()) -> ok.
 print(Cmd = [Script, "describe" | _]) ->

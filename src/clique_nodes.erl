@@ -22,7 +22,8 @@
 -export([init/0,
          safe_rpc/4,
          nodes/0,
-         register/1]).
+         register/1,
+         unregister/0]).
 
 -ifdef(TEST).
 -export([teardown/0]).
@@ -38,10 +39,17 @@ init() ->
 register(Fun) ->
     ets:insert(?nodes_table, {nodes_fun, Fun}).
 
+-spec unregister() -> true.
+unregister() ->
+    ets:delete(?nodes_table, nodes_fun).
+
 -spec nodes() -> [node()].
 nodes() ->
-    [{nodes_fun, Fun}] = ets:lookup(?nodes_table, nodes_fun),
-    Fun().
+    case ets:lookup(?nodes_table, nodes_fun) of
+        [{nodes_fun, Fun}] -> Fun();
+        [] -> []
+    end.
+    
 
 %% @doc Wraps an rpc:call/4 in a try/catch to handle the case where the
 %%      'rex' process is not running on the remote node. This is safe in

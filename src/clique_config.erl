@@ -23,16 +23,20 @@
 %% API
 -export([init/0,
          register/2,
+         unregister/1,
          register_formatter/2,
+         unregister_formatter/1,
          config_flags/0,
          show/2,
          set/2,
-         whitelist/1,
+         whitelist/2,
+         unwhitelist/2,
          describe/2,
-         load_schema/1]).
+         load_schema/2,
+         unload_schema/1]).
 
 %% Callbacks for rpc calls
--export([do_set/1,
+-export([do_set/2,
          get_local_env_status/2,
          get_local_env_vals/2]).
 
@@ -58,10 +62,21 @@
 register(Key, Callback) ->
     ets:insert(?config_table, {Key, Callback}).
 
+-spec unregister([string()]) -> true.
+unregister(Key) ->
+    ets:delete(?config_table, Key).
+
 %% @doc Register a pretty-print function for a given config key
 -spec register_formatter([string()], fun()) -> true.
 register_formatter(Key, Callback) ->
     ets:insert(?formatter_table, {Key, Callback}).
+
+-spec unregister_formatter([string()]) -> true.
+unregister_formatter(Key) ->
+    case ets:lookup(?formatter_table, Key) of
+        [] -> {error, formatter_not_register};
+        [{Key, _}] -> ets:delete(?formatter_table, Key)
+    end.
 
 init() ->
     _ = ets:new(?config_table, [public, named_table]),
@@ -72,16 +87,23 @@ init() ->
 
 %% @doc Load Schemas into ets when given directories containing the *.schema files.
 %% Note that this must be run before any registrations are made.
--spec load_schema([string()]) -> ok | {error, schema_files_not_found}.
-load_schema(Directories) ->
+-spec load_schema([string()], atom()) -> ok | {error, schema_files_not_found}.
+load_schema(Directories, App) ->
     SchemaFiles = schema_paths(Directories),
     case SchemaFiles of
         [] ->
             {error, schema_files_not_found};
         _ ->
             Schema = cuttlefish_schema:files(SchemaFiles),
-            true = ets:insert(?schema_table, {schema, Schema}),
+            true = ets:insert(?schema_table, {App, Schema}),
             ok
+    end.
+
+-spec unload_schema([atom()]) -> ok | {error, schema_not_load}.
+unload_schema(App) ->
+    case ets:lookup(?schema_table, App) of
+        [] -> {error, schema_not_load};
+        [{App, _}] -> ets:delete(?schema_table, App), ok
     end.
 
 -spec schema_paths([string()]) -> [string()].
@@ -93,7 +115,7 @@ schema_paths(Directories) ->
 
 -spec show([string()], proplist()) -> clique_status:status() | err().
 show(Args, Flags) ->
-    case get_valid_mappings(Args) of
+    case get_valid_mappings(Args, proplists:get_value(app, Flags)) of
         {error, _}=E ->
             E;
         [] ->
@@ -105,8 +127,8 @@ show(Args, Flags) ->
     end.
 
 -spec describe([string()], proplist()) -> clique_status:status() | err().
-describe(Args, _Flags) ->
-    case get_valid_mappings(Args) of
+describe(Args, Flags) ->
+    case get_valid_mappings(Args, proplists:get_value(app, Flags)) of
         {error, _}=E ->
             E;
         [] ->
@@ -121,28 +143,35 @@ describe(Args, _Flags) ->
     end.
 
 -spec set(proplist(), proplist()) -> status() | err().
-set(Args, [{all, _}]) ->
-    %% Done as an io:format instead of a status, so that the user is not totally
-    %% left in the dark if the multicall ends up taking a while to finish:
-    io:format("Setting config across the cluster~n", []),
-    Nodes = clique_nodes:nodes(),
-    {Results0, Down0} = rpc:multicall(Nodes, ?MODULE, do_set, [Args]),
+set(Args, Flags) ->
+    case proplists:get_value(node, Flags) of
+        undefined ->
+            case proplists:get_value(all, Flags) of
+                undefined ->
+                    M1 = do_set(Args, Flags),
+                    return_set_status(M1, node());
+                _ ->
+                    io:format("Setting config across the cluster~n", []),
+                    Nodes = clique_nodes:nodes(),
+                    {Results0, Down0} = rpc:multicall(Nodes, ?MODULE, do_set, [Args, Flags]),
 
-    Results = [[{"Node", Node}, {"Node Down/Unreachable", false}, {"Result", Status}] ||
-               {Node, Status} <- Results0],
-    Down = [[{"Node", Node}, {"Node Down/Unreachable", true}, {"Result", "N/A"}] ||
-            Node <- Down0],
+                    Results = [[{"Node", Node}, 
+                                {"Node Down/Unreachable", false}, 
+                                {"Result", Status}] || {Node, Status} <- Results0],
+                    Down = [[{"Node", Node}, 
+                             {"Node Down/Unreachable", true}, 
+                             {"Result", "N/A"}] ||Node <- Down0],
 
-    NodeStatuses = lists:sort(Down ++ Results),
-    [clique_status:table(NodeStatuses)];
-set(Args, [{node, Node}]) ->
-    M1 = clique_nodes:safe_rpc(Node, ?MODULE, do_set, [Args]),
-    return_set_status(M1, Node);
-set(Args, []) ->
-    M1 = do_set(Args),
-    return_set_status(M1, node());
-set(_Args, _Flags) ->
-    app_config_flags_error().
+                    NodeStatuses = lists:sort(Down ++ Results),
+                    [clique_status:table(NodeStatuses)]
+            end;
+        Node when is_atom(Node) ->
+            M1 = clique_nodes:safe_rpc(Node, ?MODULE, do_set, [Args, Flags]),
+            return_set_status(M1, Node);
+        _ ->
+            app_config_flags_error()
+    end.
+
 
 return_set_status({error, _} = E, _Node) ->
     E;
@@ -151,19 +180,28 @@ return_set_status({badrpc, Reason}, Node) ->
 return_set_status({_, Result}, _Node) ->
     [clique_status:text(Result)].
 
-do_set(Args) ->
-    M1 = get_config(Args),
+do_set(Args, Flags) ->
+    M1 = get_config(Args, proplists:get_value(app, Flags)),
     M2 = set_config(M1),
     run_callback(M2).
 
 %% @doc Whitelist settable cuttlefish variables. By default all variables are not settable.
--spec whitelist([string()]) -> ok | {error, {invalid_config_keys, [string()]}}.
-whitelist(Keys) ->
-    case get_valid_mappings(Keys) of
+-spec whitelist([string()], atom()) -> ok | {error, {invalid_config_keys, [string()]}}.
+whitelist(Keys, App) ->
+    case get_valid_mappings(Keys, App) of
         {error, _}=E ->
             E;
         _ ->
             _ = [ets:insert(?whitelist_table, {Key}) || Key <- Keys],
+            ok
+    end.
+
+unwhitelist(Keys, App) ->
+    case get_valid_mappings(Keys, App) of
+        {error, _}=E ->
+            E;
+        _ ->
+            _ = [ets:delete(?whitelist_table, Key) || Key <- Keys],
             ok
     end.
 
@@ -185,14 +223,11 @@ check_keys_in_whitelist(Keys) ->
 -spec get_env_status([envkey()], cuttlefish_flag_list(), flags()) -> status() | err().
 get_env_status(EnvKeys, CuttlefishFlags, []) ->
     get_local_env_status(EnvKeys, CuttlefishFlags);
-get_env_status(EnvKeys, CuttlefishFlags, Flags) when length(Flags) =:= 1 ->
-    [{Key, Val}] = Flags,
-    case Key of
-        node -> get_remote_env_status(EnvKeys, CuttlefishFlags, Val);
-        all -> get_remote_env_status(EnvKeys, CuttlefishFlags)
-    end;
-get_env_status(_EnvKeys, _CuttlefishFlags, _Flags) ->
-    app_config_flags_error().
+get_env_status(EnvKeys, CuttlefishFlags, Flags) ->
+    case proplists:get_value(node, Flags) of
+        undefined -> get_remote_env_status(EnvKeys, CuttlefishFlags);
+        Val       -> get_remote_env_status(EnvKeys, CuttlefishFlags, Val)
+    end.
 
 -spec get_local_env_status([envkey()], cuttlefish_flag_list()) -> status().
 get_local_env_status(EnvKeys, CuttlefishFlags) ->
@@ -256,7 +291,9 @@ get_remote_env_status(EnvKeys, CuttlefishFlags) ->
 run_callback({error, _}=E) ->
     E;
 run_callback(Args) ->
-    OutStrings = [run_callback(K, V, F) || {K, V} <- Args, {_, F} <- ets:lookup(?config_table, K)],
+    OutStrings = [run_callback(K, V, F) || 
+                    {K, V} <- Args, 
+                    {_, F} <- ets:lookup(?config_table, cuttlefish_variable:format(K))],
     Output = string:join(OutStrings, "\n"), %% TODO return multiple strings tagged with keys
     %% Tag the return value with our current node so we know
     %% where this result came from when we use multicall:
@@ -272,11 +309,11 @@ run_callback(K, V, F) ->
             [UpdateMsg, $\n, Output]
     end.
 
--spec get_config(args()) -> err() | {args(), proplist(), conf()}.
-get_config([]) ->
+-spec get_config(args(), atom()) -> err() | {args(), proplist(), conf()}.
+get_config([], _) ->
     {error, set_no_args};
-get_config(Args) ->
-    [{schema, Schema}] = ets:lookup(?schema_table, schema),
+get_config(Args, App) ->
+    [{App, Schema}] = ets:lookup(?schema_table, App),
     Conf = [{cuttlefish_variable:tokenize(K), V} || {K, V} <- Args],
     case cuttlefish_generator:minimal_map(Schema, Conf) of
         {error, _, Msg} ->
@@ -318,20 +355,24 @@ config_flags() ->
                               "Apply the operation to all nodes in the cluster"}]})].
 
 
--spec get_valid_mappings([string()]) -> err() | [{string(), cuttlefish_mapping:mapping()}].
-get_valid_mappings(Keys0) ->
+-spec get_valid_mappings([string()], atom()) -> err() | [{string(), cuttlefish_mapping:mapping()}].
+get_valid_mappings(Keys0, App) ->
     Keys = [cuttlefish_variable:tokenize(K) || K <- Keys0],
-    [{schema, Schema}] = ets:lookup(?schema_table, schema),
-    {_Translations, Mappings0, _Validators} = Schema,
-    KeyMappings0 = valid_mappings(Keys, Mappings0),
-    KeyMappings = match_key_order(Keys0, KeyMappings0),
-    case length(KeyMappings) =:= length(Keys) of
-        false ->
-            Invalid = invalid_keys(Keys, KeyMappings),
-            {error, {invalid_config_keys, Invalid}};
-        true ->
-            KeyMappings
-    end.
+    case ets:lookup(?schema_table, App) of
+        [] -> 
+            {error, {invalid_schema_fail}};
+        [{App, Schema}] ->
+            {_Translations, Mappings0, _Validators} = Schema,
+            KeyMappings0 = valid_mappings(Keys, Mappings0),
+            KeyMappings = match_key_order(Keys0, KeyMappings0),
+            case length(KeyMappings) =:= length(Keys) of
+                false ->
+                    Invalid = invalid_keys(Keys, KeyMappings),
+                    {error, {invalid_config_keys, Invalid}};
+                true ->
+                    KeyMappings
+            end
+        end.
 
 -spec valid_mappings([cuttlefish_variable:variable()], [cuttlefish_mapping:mapping()]) ->
     [{string(), cuttlefish_mapping:mapping()}].
@@ -445,7 +486,7 @@ test_blacklisted_conf() ->
     ?assertEqual({error, {config_not_settable, ["test.config"]}}, set([{"test.config", "42"}], [])).
 
 test_set_basic() ->
-    ?assertEqual(ok, whitelist(["test.config"])),
+    ?assertEqual(ok, whitelist(["test.config"], clique)),
 
     Result = set([{"test.config", "42"}], []),
     ?assertNotMatch({error, _}, Result),
@@ -456,13 +497,13 @@ test_set_bad_flags() ->
     ?assertMatch({error, {invalid_flag_combination, _}}, Result).
 
 test_set_all_flag() ->
-    ?assertEqual(ok, whitelist(["test.config"])),
+    ?assertEqual(ok, whitelist(["test.config"], clique)),
     Result = set([{"test.config", "44"}], [{all, undefined}]),
     ?assertNotMatch({error, _}, Result),
     ?assertEqual({ok, 44}, application:get_env(clique, config_test)).
 
 test_set_node_flag() ->
-    ?assertEqual(ok, whitelist(["test.config"])),
+    ?assertEqual(ok, whitelist(["test.config"], clique)),
     Result = set([{"test.config", "45"}], [{node, node()}]),
     ?assertNotMatch({error, _}, Result),
     ?assertEqual({ok, 45}, application:get_env(clique, config_test)).

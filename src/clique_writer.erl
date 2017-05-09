@@ -30,6 +30,7 @@
 -export([
          init/0,
          register/2,
+         unregister/1,
          write/2
         ]).
 
@@ -63,6 +64,13 @@ init() ->
 -spec register(string(), module()) -> true.
 register(Name, Module) ->
     ets:insert(?writer_table, {Name, Module}).
+
+-spec unregister(string()) -> true.
+unregister(Name) ->
+    case ets:lookup(?writer_table, Name) of
+        [] -> {error, writer_not_register};
+        [{Name, _}] -> ets:delete(?writer_table, Name)
+    end.
 
 -spec write(err() | clique_status:status(), string()) -> {iolist(), iolist()}.
 write(Status, Format) ->
