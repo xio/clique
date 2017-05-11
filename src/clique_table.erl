@@ -27,7 +27,7 @@
 
 -include("clique_status_types.hrl").
 
--define(MAX_LINE_LEN, 100).
+-define(MAX_LINE_LEN, 200).
 -define(else, true).
 -define(MINWIDTH(W),
         if W =< 0 ->
