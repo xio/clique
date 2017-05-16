@@ -50,7 +50,7 @@
 -type proplist() :: [{atom(), term()}].
 -type flagspecs() :: [spec()].
 -type flags() :: proplist().
--type args() :: clique_parser:args().
+% -type args() :: clique_parser:args().
 -type conf() :: [{[string()], string()}].
 
 -type envkey() :: {string(), {atom(), atom()}}.
@@ -121,9 +121,14 @@ show(Args, Flags) ->
         [] ->
             {error, show_no_args};
         KeyMappings ->
-            EnvKeys = get_env_keys(KeyMappings),
-            CuttlefishFlags = get_cuttlefish_flags(KeyMappings),
-            get_env_status(EnvKeys, CuttlefishFlags, Flags)
+            case check_keys_in_whitelist(Args) of
+                ok ->
+                    EnvKeys = get_env_keys(KeyMappings),
+                    CuttlefishFlags = get_cuttlefish_flags(KeyMappings),
+                    get_env_status(EnvKeys, CuttlefishFlags, Flags);
+                {error, _} ->
+                    {error, {config_not_show, Args}}
+            end
     end.
 
 -spec describe([string()], proplist()) -> clique_status:status() | err().
@@ -181,10 +186,21 @@ return_set_status({_, Result}, _Node) ->
     [clique_status:text(Result)].
 
 do_set(Args, Flags) ->
-    M1 = get_config(Args, proplists:get_value(app, Flags)),
-    M2 = set_config(M1),
-    run_callback(M2).
-
+    App = proplists:get_value(app, Flags),
+    case ets:lookup(?schema_table, App) of
+        [{App, _Schema}] ->
+            Keys = [K || {K, _}  <- Args],
+            case check_keys_in_whitelist(Keys) of
+                ok ->
+                    Mapings = get_valid_mappings(Keys, App),
+                    run_callback(Args, Mapings);
+                {error, _}=E ->
+                    E
+            end;
+        [] ->
+            {error, set_no_args}
+    end.
+    
 %% @doc Whitelist settable cuttlefish variables. By default all variables are not settable.
 -spec whitelist([string()], atom()) -> ok | {error, {invalid_config_keys, [string()]}}.
 whitelist(Keys, App) ->
@@ -251,7 +267,7 @@ get_local_env_vals(EnvKeys, CuttlefishFlags) ->
                            [] ->
                                Val1;
                            [{_K, FormatterFun}] ->
-                               FormatterFun(Val1)
+                               FormatterFun(FormatterKey, Val1)
                        end,
                 {KeyStr, Val2}
             end || {{KeyStr, {App, Key}}, CFlagSpec} <- lists:zip(EnvKeys, CuttlefishFlags)],
@@ -286,60 +302,66 @@ get_remote_env_status(EnvKeys, CuttlefishFlags) ->
     end.
 
 
--spec run_callback(err()) -> err();
-                  (conf()) -> {node, iolist()}.
-run_callback({error, _}=E) ->
+-spec run_callback(err(), list()) -> err();
+                  (conf(), list()) -> {node, iolist()}.
+run_callback({error, _}=E, _) ->
     E;
-run_callback(Args) ->
-    OutStrings = [run_callback(K, V, F) || 
+run_callback(Args, Mappings) ->
+    OutStrings = [run_callback(K, V, F, Mappings) || 
                     {K, V} <- Args, 
-                    {_, F} <- ets:lookup(?config_table, cuttlefish_variable:format(K))],
+                    {_, F} <- ets:lookup(?config_table, K)],
     Output = string:join(OutStrings, "\n"), %% TODO return multiple strings tagged with keys
     %% Tag the return value with our current node so we know
     %% where this result came from when we use multicall:
     {node(), Output}.
 
-run_callback(K, V, F) ->
-    KeyString = cuttlefish_variable:format(K),
-    UpdateMsg = io_lib:format("~s set to ~p", [KeyString, V]),
-    case F(K, V) of
-        "" ->
-            UpdateMsg;
-        Output ->
-            [UpdateMsg, $\n, Output]
+run_callback(K, V, F, Mappings) ->
+    Mapping = proplists:get_value(K, Mappings),
+    [DT] = cuttlefish_mapping:datatype(Mapping),
+    case cuttlefish_datatypes:from_string(V, DT) of
+        {error, _} -> 
+            io_lib:format("~p: error type is: ~p~n", [K, V]);
+        V1 -> 
+            UpdateMsg = io_lib:format("~p set to ~p", [K, V]),
+            [UpdateMsg, F(cuttlefish_variable:tokenize(K), V1)]
     end.
 
--spec get_config(args(), atom()) -> err() | {args(), proplist(), conf()}.
-get_config([], _) ->
-    {error, set_no_args};
-get_config(Args, App) ->
-    [{App, Schema}] = ets:lookup(?schema_table, App),
-    Conf = [{cuttlefish_variable:tokenize(K), V} || {K, V} <- Args],
-    case cuttlefish_generator:minimal_map(Schema, Conf) of
-        {error, _, Msg} ->
-            {error, {invalid_config, Msg}};
-        AppConfig ->
-            {Args, AppConfig, Conf}
-    end.
 
--spec set_config(err()) -> err();
-                ({args(), proplist(), conf()}) -> err() | conf().
-set_config({error, _}=E) ->
-    E;
-set_config({Args, AppConfig, Conf}) ->
-    Keys = [K || {K, _}  <- Args],
-    case check_keys_in_whitelist(Keys) of
-        ok ->
-            _ = set_app_config(AppConfig),
-            Conf;
-        {error, _}=E ->
-            E
-    end.
+% -spec get_config(args(), atom()) -> err() | {args(), proplist(), conf()}.
+% get_config([], _) ->
+%     {error, set_no_args};
+% get_config(Args, App) ->
+%     case ets:lookup(?schema_table, App) of
+%         [{App, Schema}] ->
+%             Conf = [{cuttlefish_variable:tokenize(K), V} || {K, V} <- Args],
+%             case cuttlefish_generator:minimal_map2(Schema, Conf) of
+%                 {error, _, Msg} ->
+%                     {error, {invalid_config, Msg}};
+%                 AppConfig ->
+%                     {Args, AppConfig, Conf}
+%             end;
+%         [] ->
+%             {error, set_no_args}
+%     end.
 
--spec set_app_config(proplist()) -> _.
-set_app_config(AppConfig) ->
-    [application:set_env(App, Key, Val) || {App, Settings} <- AppConfig,
-                                           {Key, Val} <- Settings].
+% -spec set_config(err()) -> err();
+%                 ({args(), proplist(), conf()}) -> err() | conf().
+% set_config({error, _}=E) ->
+%     E;
+% set_config({Args, AppConfig, Conf}) ->
+%     Keys = [K || {K, _}  <- Args],
+%     case check_keys_in_whitelist(Keys) of
+%         ok ->
+%             _ = set_app_config(AppConfig),
+%             Conf;
+%         {error, _}=E ->
+%             E
+%     end.
+
+% -spec set_app_config(proplist()) -> _.
+% set_app_config(AppConfig) ->
+%     [application:set_env(App, Key, Val) || {App, Settings} <- AppConfig,
+%                                            {Key, Val} <- Settings].
 
 -spec config_flags() -> flagspecs().
 config_flags() ->
@@ -352,7 +374,10 @@ config_flags() ->
      clique_spec:make({all, [{shortname, "a"},
                              {longname, "all"},
                              {description,
-                              "Apply the operation to all nodes in the cluster"}]})].
+                              "Apply the operation to all nodes in the cluster"}]}),
+     clique_spec:make({app, [{longname, "app"},
+                             {typecast, fun erlang:list_to_atom/1},
+                             {description,"app"}]})].
 
 
 -spec get_valid_mappings([string()], atom()) -> err() | [{string(), cuttlefish_mapping:mapping()}].
@@ -360,7 +385,7 @@ get_valid_mappings(Keys0, App) ->
     Keys = [cuttlefish_variable:tokenize(K) || K <- Keys0],
     case ets:lookup(?schema_table, App) of
         [] -> 
-            {error, {invalid_schema_fail}};
+            {error, {invalid_schema_fail, App}};
         [{App, Schema}] ->
             {_Translations, Mappings0, _Validators} = Schema,
             KeyMappings0 = valid_mappings(Keys, Mappings0),

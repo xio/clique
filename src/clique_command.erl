@@ -106,9 +106,9 @@ match(Cmd0) ->
     {Cmd, Args} = split_command(Cmd0),
     %% Check for builtin commands first. If that fails, check our command table.
     case Cmd of
-        [_Script, "set" | _] ->
+        ["config", "set" | _] ->
             {?SET_CMD_SPEC, Args};
-        [_Script, "show" | _] ->
+        ["config", "show" | _] ->
             Spec = cmd_spec(Cmd, fun clique_config:show/2, clique_config:config_flags()),
             {Spec, Args};
         [_Script, "describe" | _] ->

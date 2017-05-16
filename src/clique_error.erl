@@ -41,6 +41,8 @@ format(_Cmd, {error, {no_matching_spec, Cmd}}) ->
         Usage ->
             status(io_lib:format("~ts", [Usage]))
     end;
+format(_Cmd, {error, {invalid_schema, Str}}) ->
+    status(io_lib:format("Invalid app: ~p", [Str]));
 format(_Cmd, {error, {invalid_flag, Str}}) ->
     status(io_lib:format("Invalid flag: ~p", [Str]));
 format(_Cmd, {error, {invalid_action, Str}}) ->
@@ -66,6 +68,8 @@ format(_Cmd, {error, {too_many_equal_signs, Arg}}) ->
     status(io_lib:format("Too many equal signs in argument: ~p", [Arg]));
 format(_Cmd, {error, {invalid_config_keys, Invalid}}) ->
     status(io_lib:format("Invalid config keys: ~ts", [Invalid]));
+format(_Cmd, {error, {invalid_schema_fail, Invalid}}) ->
+    status(io_lib:format("Invalid config --app: ~ts", [Invalid]));
 format(_Cmd, {error, {invalid_config, {error, [_H|_T]=Msgs}}}) ->
     %% Cuttlefish deeply nested errors (original cuttlefish)
     status(string:join(lists:map(fun({error, Msg}) -> Msg end,
@@ -79,6 +83,8 @@ format(_Cmd, {error, {rpc_process_down, Node}}) ->
     status(io_lib:format("Target process could not be reached on node: ~p~n", [Node]));
 format(_Cmd, {error, {config_not_settable, Keys}}) ->
     status(io_lib:format("The following config keys are not settable: ~p~n", [Keys]));
+format(_Cmd, {error, {config_not_show, Keys}}) ->
+    status(io_lib:format("The following config keys are not show: ~p~n", [Keys]));
 format(_Cmd, {error, {nodedown, Node}}) ->
     status(io_lib:format("Target node is down: ~p~n", [Node]));
 format(_Cmd, {error, bad_node}) ->
