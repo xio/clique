@@ -38,7 +38,8 @@
          find/1,
          register/2,
          unregister/1,
-         print/1]).
+         print/1,
+         find_all/0]).
 
 init() ->
     _ = ets:new(?usage_table, [public, named_table]),
@@ -89,6 +90,9 @@ find(Cmd) ->
             Cmd2 = lists:reverse(tl(lists:reverse(Cmd))),
             find(Cmd2)
     end.
+
+find_all() ->
+    ets:tab2list(?usage_table).
 
 -ifdef(TEST).
 find_different_types_test() ->
