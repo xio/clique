@@ -79,7 +79,7 @@ parse_kv_args(Args) ->
 parse_kv_args([], Acc) ->
     Acc;
 parse_kv_args([Arg | Args], Acc) ->
-    case string:tokens(Arg, "=") of
+    case string:split(Arg, "=") of
         [Key, Val] ->
             parse_kv_args(Args, [{Key, Val} | Acc]);
         [Key] ->
