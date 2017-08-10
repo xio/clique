@@ -317,9 +317,15 @@ run_callback(Args, Mappings) ->
 
 run_callback(K, V, F, Mappings) ->
     Mapping = proplists:get_value(K, Mappings),
-    [DT] = cuttlefish_mapping:datatype(Mapping),
-    case cuttlefish_datatypes:from_string(V, DT) of
-        {error, _} -> 
+    DTs = cuttlefish_mapping:datatype(Mapping),
+    Temp = lists:foldl(fun(DT, Acc) ->
+        case cuttlefish_datatypes:from_string(V, DT) of
+        {error, _} -> Acc;
+        V1 -> V1
+        end
+    end, undefined, DTs),
+    case Temp of
+        undefined ->
             io_lib:format("~p: error type is: ~p~n", [K, V]);
         V1 -> 
             UpdateMsg = io_lib:format("~p set to ~p", [K, V]),
