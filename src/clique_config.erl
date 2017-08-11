@@ -108,7 +108,11 @@ unload_schema(App) ->
 
 -spec schema_paths([string()]) -> [string()].
 schema_paths(Directories) ->
-    lists:foldl(fun(Dir, Acc) ->
+    lists:foldl(fun(Dir0, Acc) ->
+                    Dir = case Dir0 of
+                        {error, bad_name} -> "priv";
+                        _ -> Dir0
+                    end,
                     Files = filelib:wildcard(Dir ++ "/*.schema"),
                     Files ++ Acc
                 end, [], Directories).
